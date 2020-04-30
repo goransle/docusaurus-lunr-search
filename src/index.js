@@ -9,9 +9,13 @@ const fs = require("fs");
 const path = require("path");
 const cheerio = require("cheerio");
 
-const sectionHeaderElements = ["h2", "h3"];
+let titleElement = "h1";
+let sectionHeaderElements = ["h2", "h3"];
 
-module.exports = function () {
+module.exports = function ({}, options) {
+  if (options.titleElement) titleElement = options.titleElement;
+  if (options.sectionHeaderElements)
+    sectionHeaderElements = options.sectionHeaderElements;
   return {
     name: "docusurus-lunr-search",
     getThemePath() {
@@ -26,7 +30,7 @@ module.exports = function () {
               algolia: {
                 name: "algolia",
                 test: /algolia\.css$/,
-                chunks: `all`,
+                chunks: "all",
                 enforce: true,
                 // Set priority higher than docusaurus single-css extraction
                 priority: 60,
@@ -57,8 +61,8 @@ module.exports = function () {
 function buildSearchData(files) {
   const searchData = [];
   files.forEach(({ path, url }) => {
-    if(!fs.existsSync(path)) return;
-    
+    if (!fs.existsSync(path)) return;
+
     const htmlFile = fs.readFileSync(path);
     //   const dom = new JSDOM(htmlFile);
     const $ = cheerio.load(htmlFile);
@@ -67,22 +71,23 @@ function buildSearchData(files) {
     if (!article.length) {
       return;
     }
+
     const markdown = article.find(".markdown");
     if (!markdown.length) {
       return;
     }
 
-    const pageTitleElement = article.find("h1");
+    const pageTitleElement = article.find(titleElement);
     if (!pageTitleElement.length) {
       return;
     }
-    const pageTitle = article.find("h1").text();
+    const pageTitle = article.find(titleElement).text();
     const sectionHeaders = sectionHeaderElements.reduce((acc, selector) => {
       acc = acc.concat(Array.from(markdown.find(selector)));
       return acc;
     }, []);
 
-    keywords = $("meta[name='keywords']").attr("content");
+    let keywords = $("meta[name='keywords']").attr("content");
     if (typeof keywords !== "undefined" && keywords) {
       keywords = keywords.replace(",", " ");
     }
