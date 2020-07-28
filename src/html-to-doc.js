@@ -9,7 +9,7 @@ const toText = require('hast-util-to-text')
 const is = require('unist-util-is')
 const toVfile = require('to-vfile')
 
-const sectionHeaderTest = ({ tagName }) => ['h2', 'h3'].includes(tagName)
+const sectionHeaderTest = ({ tagName }) => ['h4', 'h5'].includes(tagName)
 
 // Build search data for a html
 function* scanDocuments({ path, url }) {
@@ -37,7 +37,7 @@ function* scanDocuments({ path, url }) {
     return
   }
 
-  const pageTitleElement = select('h1', article)
+  const pageTitleElement = select('h3', article)
   if (!pageTitleElement) {
     return
   }
