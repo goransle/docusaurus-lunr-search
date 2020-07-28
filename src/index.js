@@ -1,34 +1,31 @@
-/**
- * Copyright (c) 2017-present, Facebook, Inc.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- */
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const lunr = require('lunr')
+const { Worker } = require('worker_threads')
+const Guage = require('gauge')
 
-const fs = require("fs");
-const path = require("path");
-const cheerio = require("cheerio");
+// local imports
+const utils = require('./utils')
 
-let titleElement = "h1";
-let sectionHeaderElements = ["h2", "h3"];
-
-module.exports = function ({}, options) {
-  if (options.titleElement) titleElement = options.titleElement;
-  if (options.sectionHeaderElements)
-    sectionHeaderElements = options.sectionHeaderElements;
+module.exports = function (context, options) {
+  options = options || {};
+  let languages
   return {
-    name: "docusurus-lunr-search",
+    name: 'docusaurus-lunr-search',
     getThemePath() {
-      return path.resolve(__dirname, "./theme");
+      return path.resolve(__dirname, './theme');
     },
-    configureWebpack() {
+    configureWebpack(config) {
+      const generatedFilesDir = config.resolve.alias['@generated']
+      languages = utils.generateLunrClientJS(generatedFilesDir, options.languages);
       // Ensure that algolia docsearch css is its own chunk
       return {
         optimization: {
           splitChunks: {
             cacheGroups: {
               algolia: {
-                name: "algolia",
+                name: 'algolia',
                 test: /algolia\.css$/,
                 chunks: "all",
                 enforce: true,
@@ -41,99 +38,118 @@ module.exports = function ({}, options) {
       };
     },
     async postBuild({ routesPaths = [], outDir, baseUrl }) {
-      const files = routesPaths
-        .filter((route) => route !== baseUrl && route !== `${baseUrl}404.html`)
-        .map((route) => route.substr(baseUrl.length))
-        .map((route) => ({
-          path: path.join(outDir, route, "index.html"),
-          url: route,
-        }));
-      const searchData = buildSearchData(files);
+      console.log('docusaurus-lunr-search:: Building search docs and lunr index file')
+      console.time('docusaurus-lunr-search:: Indexing time')
+
+      const [files, meta] = utils.getFilePaths(routesPaths, outDir, baseUrl, options)
+      if (meta.excludedCount) {
+        console.log(`docusaurus-lunr-search:: ${meta.excludedCount} documents were excluded from the search by excludeRoutes config`)
+      }
+      const searchDocuments = []
+      const lunrBuilder = lunr(function (builder) {
+        if (languages) {
+          this.use(languages)
+        } 
+        this.ref('id')
+        this.field('title', { boost: 200 })
+        this.field('content', { boost: 2 })
+        this.field('keywords', { boost: 100 })
+        this.metadataWhitelist = ['position']
+
+        const { build } = builder
+        builder.build = () => {
+          builder.build = build
+          return builder
+        }
+      })
+
+      const addToSearchData = (d) => {
+        lunrBuilder.add({
+          id: searchDocuments.length,
+          title: d.title,
+          content: d.content,
+          keywords: d.keywords
+        });
+        searchDocuments.push(d);
+      }
+
+      const indexedDocuments = await buildSearchData(files, addToSearchData)
+      const lunrIndex = lunrBuilder.build()
+      console.timeEnd('docusaurus-lunr-search:: Indexing time')
+      console.log(`docusaurus-lunr-search:: indexed ${indexedDocuments} documents out of ${files.length}`)
+      
+      console.log('docusaurus-lunr-search:: writing search-doc.json')
       fs.writeFileSync(
-        path.join(outDir, "search-data.json"),
-        JSON.stringify(searchData)
-      );
+        path.join(outDir, 'search-doc.json'),
+        JSON.stringify(searchDocuments)
+      )
+      console.log('docusaurus-lunr-search:: writing lunr-index.json')
+      fs.writeFileSync(
+        path.join(outDir, 'lunr-index.json'),
+        JSON.stringify(lunrIndex)
+      )
+      console.log('docusaurus-lunr-search:: End of process')
     },
   };
 };
 
-// Build search data for a html
-function buildSearchData(files) {
-  const searchData = [];
-  files.forEach(({ path, url }) => {
-    if (!fs.existsSync(path)) return;
-
-    const htmlFile = fs.readFileSync(path);
-    //   const dom = new JSDOM(htmlFile);
-    const $ = cheerio.load(htmlFile);
-
-    const article = $("article");
-    if (!article.length) {
-      return;
-    }
-
-    const markdown = article.find(".markdown");
-    if (!markdown.length) {
-      return;
-    }
-
-    const pageTitleElement = article.find(titleElement);
-    if (!pageTitleElement.length) {
-      return;
-    }
-    const pageTitle = article.find(titleElement).text();
-    const sectionHeaders = sectionHeaderElements.reduce((acc, selector) => {
-      acc = acc.concat(Array.from(markdown.find(selector)));
-      return acc;
-    }, []);
-
-    let keywords = $("meta[name='keywords']").attr("content");
-    if (typeof keywords !== "undefined" && keywords) {
-      keywords = keywords.replace(",", " ");
-    }
-
-    searchData.push({
-      title: pageTitle,
-      type: 0,
-      sectionRef: "#",
-      url,
-      // If there is no sections then push the complete content under page title
-      content: sectionHeaders.length === 0 ? getContent(markdown) : "",
-      keywords: keywords,
-    });
-
-    sectionHeaders.forEach((sectionHeader) => {
-      sectionHeader = $(sectionHeader);
-      const title = sectionHeader.text().replace("#","");
-      const sectionRef = sectionHeader.children().first().attr("id");
-      const content = getSectionContent(sectionHeader);
-      searchData.push({
-        title,
-        type: 1,
-        pageTitle,
-        url: `${url}#${sectionRef}`,
-        content,
-      });
-    });
-  });
-  return searchData;
-}
-
-function getContent(element) {
-  const text =
-    element.is("table") || element.find("table").length !== 0
-      ? element.html().replace(/<[^>]*>/g, " ")
-      : element.text();
-  return text.replace(/\s\s+/g, " ").replace(/(\r\n|\n|\r)/gm, " ");
-}
-
-function getSectionContent(section) {
-  let content = "";
-  section = section.next();
-  while (section.length) {
-    if (sectionHeaderElements.some((s) => section.is(s))) break;
-    content += getContent(section) + " ";
-    section = section.next();
+function buildSearchData(files, addToSearchData) {
+  if (!files.length) {
+    return Promise.resolve()
   }
-  return content;
+  let activeWorkersCount = 0
+  const workerCount = Math.max(2, os.cpus().length)
+  
+  console.log(`docusaurus-lunr-search:: Start scanning documents in ${Math.min(workerCount, files.length)} threads`)
+  const gauge = new Guage()
+  gauge.show('scanning documents...')
+  let indexedDocuments = 0 // Documents that have added at least one value to the index
+
+  return new Promise((resolve, reject) => {
+    let nextIndex = 0
+
+    const handleMessage = ([isDoc, payload], worker) => {
+      gauge.pulse()
+      if (isDoc) {
+        addToSearchData(payload)
+      } else {
+        indexedDocuments += payload
+        gauge.show(`scanned ${nextIndex} files out of ${files.length}`, nextIndex / files.length)
+
+        if (nextIndex < files.length) {
+          worker.postMessage(files[nextIndex++])
+        } else {
+          worker.postMessage(null)
+        }
+      }
+    }
+  
+    for (let i = 0; i < workerCount; i++) {
+      if (nextIndex >= files.length) {
+        break
+      }
+      const worker = new Worker(path.join(__dirname, 'html-to-doc.js'))
+      worker.on('error', reject)
+      worker.on('message', (message) => {
+        handleMessage(message, worker)
+      })
+      worker.on('exit', code => {
+        if (code !== 0) {
+          reject(new Error(`Scanner stopped with exit code ${code}`));
+        } else {
+          // Worker #${i} completed their work in worker pool
+          activeWorkersCount--
+          if (activeWorkersCount <= 0) {
+            // No active workers left, we are done
+            gauge.hide()
+            resolve(indexedDocuments)
+          }
+        }
+      })
+
+      activeWorkersCount++
+      worker.postMessage(files[nextIndex++])
+      gauge.pulse()
+    }
+  })
 }
